@@ -18,7 +18,7 @@ button.sm{width:auto;padding:6px 10px;font-size:14px;margin:4px 4px 0 0}
 .pill{display:inline-block;padding:2px 8px;border-radius:99px;border:1px solid var(--line);font:13px system-ui,sans-serif}
 .form span{display:inline-block;width:20px;height:20px;border-radius:4px;color:#fff;text-align:center;font:600 12px/20px system-ui;margin-right:2px}
 .W{background:var(--h)}.D{background:var(--d)}.L{background:var(--a)}
-table{width:100%;border-collapse:collapse}td{vertical-align:top;padding:4px 6px 4px 0;font:14px system-ui,sans-serif}.err{color:var(--a);font:14px system-ui}
+table{width:100%;border-collapse:collapse}td{vertical-align:top;padding:4px 6px 4px 0;font:14px system-ui,sans-serif;overflow-wrap:anywhere;width:50%}.err{color:var(--a);font:14px system-ui}
 </style></head><body>
 <h1>FootPredict</h1>
 <div class="card">
@@ -29,60 +29,116 @@ table{width:100%;border-collapse:collapse}td{vertical-align:top;padding:4px 6px 
  <div><label>Away team</label><select id="ta"></select></div></div>
  <button class="go" id="go">Predict</button>
  <div class="mute" id="upd" style="margin-top:8px"></div>
+ <label>Auto-reload data</label><select id="auto"><option value="0">Off</option><option value="30">Every 30 min</option><option value="5">Every 5 min</option></select>
  <button class="sm" id="now" style="margin-top:8px">Reload latest data</button>
  <div class="mute" id="acc" style="margin-top:6px"></div>
 </div>
 <div id="out"></div>
 <script>
-const $=id=>document.getElementById(id);let D=null;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pc=x=>Math.round(x*100)+'%';
-const get=async u=>{const r=await fetch(u+'?t='+Date.now());if(!r.ok)throw 'Data not built yet. Run the "Update football data" action on GitHub.';return r.json()};
+const num=(x,d)=>(typeof x==='number'&&isFinite(x))?x.toFixed(d):'?';
+const today=()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')};
+let D=null,seq=0,clubSeq=0,timer=null;
+
+function showErr(m){$('out').innerHTML=`<div class="card err">${esc(m)}</div>`}
+window.addEventListener('error',e=>showErr('Something went wrong: '+(e.message||e)));
+window.addEventListener('unhandledrejection',e=>showErr(typeof e.reason==='string'?e.reason:'Something went wrong: '+((e.reason&&e.reason.message)||e.reason)));
+
+async function get(u){
+ let r;try{r=await fetch(u+'?t='+Date.now(),{cache:'no-store'})}catch(e){throw 'No internet connection.'}
+ if(!r.ok)throw 'Data not built yet. In GitHub open Actions > Update football data > Run workflow, then wait for the green tick.';
+ try{return await r.json()}catch(e){throw 'The data file is damaged. Run the GitHub workflow again.'}}
+
 function pois(l,n){const p=[Math.exp(-l)];for(let k=1;k<=n;k++)p.push(p[k-1]*l/k);return p}
-function tau(x,y,a,b,r){return x==0&&y==0?1-a*b*r:x==0&&y==1?1+a*r:x==1&&y==0?1+b*r:x==1&&y==1?1-r:1}
+function tau(x,y,a,b,r){const v=x==0&&y==0?1-a*b*r:x==0&&y==1?1+a*r:x==1&&y==0?1+b*r:x==1&&y==1?1-r:1;return v>0?v:0}
+function hasTeam(t){return !!(D&&D.params&&D.params.t&&D.params.t[t]&&D.profiles&&D.profiles[t])}
 function calc(h,a){const P=D.params,[ah,dh]=P.t[h],[aa,da]=P.t[a];
- const mh=Math.exp(P.c+P.h+ah+da),ma=Math.exp(P.c+aa+dh),N=10,ph=pois(mh,N),pa=pois(ma,N);
+ const mh=Math.exp(P.c+P.h+ah+da),ma=Math.exp(P.c+aa+dh),N=12,ph=pois(mh,N),pa=pois(ma,N);
  let M=[],s=0;for(let i=0;i<=N;i++){M.push([]);for(let j=0;j<=N;j++){const v=ph[i]*pa[j]*tau(i,j,mh,ma,P.rho);M[i].push(v);s+=v}}
+ if(!(s>0)||!isFinite(s))throw 'Could not calculate this match.';
  let p=[0,0,0],over=0,btts=0,top=[];
  for(let i=0;i<=N;i++)for(let j=0;j<=N;j++){const v=M[i][j]/s;p[i>j?0:i==j?1:2]+=v;if(i+j>=3)over+=v;if(i&&j)btts+=v;if(i<6&&j<6)top.push([v,i+'-'+j])}
  top.sort((x,y)=>y[0]-x[0]);return{p,over,btts,top:top.slice(0,3),mh,ma}}
 function conf(f,m,mk){const g=mk?m.reduce((t,x,i)=>t+Math.abs(x-mk[i]),0)/2:.15,sc=Math.max(...f)-.5*g;return sc>=.55?'High':sc>=.42?'Medium':'Low'}
+function validMk(mk){return Array.isArray(mk)&&mk.length==3&&mk.every(x=>typeof x==='number'&&isFinite(x))}
+
 async function init(){
- try{const L=await get('data/leagues.json');$('lg').innerHTML=L.leagues.map(l=>`<option value="${l.code}">${l.country} - ${l.name}</option>`).join('');
- $('dt').value=new Date().toISOString().slice(0,10);await loadLeague();accuracy()}catch(e){$('out').innerHTML=`<div class="card err">${e}</div>`}}
-async function loadLeague(){D=await get(`data/${$('lg').value}.json`);
- const o=D.teams.map(t=>`<option>${t}</option>`).join('');$('th').innerHTML=o;$('ta').innerHTML=o;$('ta').selectedIndex=1;
- $('upd').textContent=`Data built ${D.updated}. Results until ${D.data_until}.`;loadFx()}
-function loadFx(){const F=D.fixtures.filter(f=>f.date==$('dt').value);
- $('fx').innerHTML=F.length?'<label>Matches on this date (tap one)</label>'+F.map(f=>`<button class="sm" data-h="${f.home}" data-a="${f.away}">${f.home} v ${f.away} ${f.time}</button>`).join(''):'<div class="mute">No listed matches for this date. Pick two teams below.</div>';
- document.querySelectorAll('#fx button').forEach(b=>b.onclick=()=>{$('th').value=b.dataset.h;$('ta').value=b.dataset.a;predict()})}
-const form=s=>`<div class="form">${(s||'').split('').map(c=>`<span class="${c}">${c}</span>`).join('')}</div>`;
-function prof(n,p){const a=p.last10||{},h=p.home_last,w=p.away_last,al=p.after_loss,rest=Math.floor((Date.now()-new Date(p.last_date))/864e5);
- return `<td><b>${n}</b>${form(a.form)}<div class="mute">Elo ${p.elo} | streak ${p.streak}<br>Last 10: ${a.ppg} pts/game, ${a.gf} scored, ${a.ga} conceded<br>${h?`Home: ${h.ppg} ppg (${h.n})`:''} ${w?`Away: ${w.ppg} ppg (${w.n})`:''}<br>After a loss: unbeaten ${al.unbeaten}/${al.n}<br>Last match ${rest} days ago</div></td>`}
-async function predict(){
- const h=$('th').value,a=$('ta').value;if(h==a){$('out').innerHTML='<div class="card err">Pick two different teams.</div>';return}
- const r=calc(h,a),fx=D.fixtures.find(f=>f.home==h&&f.away==a),mk=fx&&fx.market;
- const f=mk?r.p.map((x,i)=>.45*x+.55*mk[i]):r.p,s=f.reduce((t,x)=>t+x,0),F=f.map(x=>x/s);
+ try{const L=await get('data/leagues.json');
+ if(!L.leagues||!L.leagues.length)throw 'No leagues built yet. Run the GitHub workflow.';
+ $('lg').innerHTML=L.leagues.map(l=>`<option value="${esc(l.code)}">${esc(l.country)} - ${esc(l.name)}</option>`).join('');
+ $('dt').value=today();await loadLeague()}catch(e){showErr(e)}}
+
+async function loadLeague(keep){
+ const my=++seq,prevH=$('th').value,prevA=$('ta').value,code=$('lg').value;
+ let d;try{d=await get(`data/${encodeURIComponent(code)}.json`)}catch(e){if(my==seq)showErr(e);return}
+ if(my!=seq)return;                       // user switched league meanwhile
+ if(!d||!Array.isArray(d.teams)||d.teams.length<2||!d.params||!d.profiles){showErr('This league has no usable data yet.');return}
+ D=d;
+ const ok=d.teams.filter(t=>hasTeam(t));
+ const o=ok.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('');$('th').innerHTML=o;$('ta').innerHTML=o;
+ if(keep&&ok.includes(prevH)&&ok.includes(prevA)){$('th').value=prevH;$('ta').value=prevA}else $('ta').selectedIndex=Math.min(1,ok.length-1);
+ $('upd').textContent=`Data last changed ${d.updated||'?'}. Results until ${d.data_until||'?'}.`;
+ loadFx()}
+
+function loadFx(){
+ if(!D)return;const F=(D.fixtures||[]).filter(f=>f.date==$('dt').value);
+ const box=$('fx');
+ if(!F.length){box.innerHTML='<div class="mute">No listed matches for this date. Pick two teams below.</div>';return}
+ box.innerHTML='<label>Matches on this date (tap one)</label>'+F.map((f,i)=>hasTeam(f.home)&&hasTeam(f.away)
+  ?`<button class="sm" data-i="${i}">${esc(f.home)} v ${esc(f.away)} ${esc(f.time)}</button>`
+  :`<div class="mute">${esc(f.home)} v ${esc(f.away)} ${esc(f.time)} (not enough history)</div>`).join('');
+ box.querySelectorAll('button').forEach(b=>b.onclick=()=>{const f=F[+b.dataset.i];$('th').value=f.home;$('ta').value=f.away;predict(f.date)})}
+
+const form=s=>`<div class="form">${String(s||'').split('').filter(c=>'WDL'.includes(c)).map(c=>`<span class="${c}">${c}</span>`).join('')}</div>`;
+function prof(n,p){const a=p.last10||{},h=p.home_last,w=p.away_last,al=p.after_loss||{n:0,unbeaten:0};
+ const rest=p.last_date?Math.max(0,Math.floor((Date.now()-new Date(p.last_date+'T00:00:00'))/864e5)):null;
+ return `<td><b>${esc(n)}</b>${form(a.form)}<div class="mute">Elo ${esc(p.elo)} | streak ${esc(p.streak)}<br>Last 10: ${esc(a.ppg)} pts/game, ${esc(a.gf)} scored, ${esc(a.ga)} conceded<br>${h?`Home: ${esc(h.ppg)} ppg (${esc(h.n)})`:''} ${w?`Away: ${esc(w.ppg)} ppg (${esc(w.n)})`:''}<br>After a loss: unbeaten ${esc(al.unbeaten)}/${esc(al.n)}<br>${rest==null?'':`Last match ${rest} days ago`}</div></td>`}
+
+function predict(fxDate){
+ if(!D){showErr('Data is still loading. Try again in a moment.');return}
+ const h=$('th').value,a=$('ta').value;
+ if(!h||!a){showErr('Pick both teams.');return}
+ if(h==a){showErr('Pick two different teams.');return}
+ if(!hasTeam(h)||!hasTeam(a)){showErr('Not enough history for one of these teams.');return}
+ const r=calc(h,a),fx=(D.fixtures||[]).find(f=>f.home==h&&f.away==a),mk=fx&&validMk(fx.market)?fx.market:null;
+ const raw=mk?r.p.map((x,i)=>.45*x+.55*mk[i]):r.p,s=raw.reduce((t,x)=>t+x,0),F=raw.map(x=>x/s);
  const pick=['Home win','Draw','Away win'][F.indexOf(Math.max(...F))];
- const hm=D.matches.filter(m=>(D.names[m[1]]==h&&D.names[m[2]]==a)||(D.names[m[1]]==a&&D.names[m[2]]==h)).slice(-6);
- save({div:$('lg').value,home:h,away:a,p:F,day:new Date().toISOString().slice(0,10)});
- $('out').innerHTML=`<div class="card"><h2>${h} v ${a}</h2><div>Pick: <b>${pick}</b> <span class="pill">Confidence: ${conf(F,r.p,mk)}</span></div>
+ const hm=(D.matches||[]).filter(m=>{const x=D.names[m[1]],y=D.names[m[2]];return(x==h&&y==a)||(x==a&&y==h)}).slice(-6);
+ save({div:$('lg').value,home:h,away:a,p:F,day:today(),fx:(fx&&fx.date)||fxDate||null});
+ $('out').innerHTML=`<div class="card"><h2>${esc(h)} v ${esc(a)}</h2><div>Pick: <b>${pick}</b> <span class="pill">Confidence: ${conf(F,r.p,mk)}</span></div>
  <div class="bar"><div style="background:var(--h);flex:${F[0]}">${pc(F[0])}</div><div style="background:var(--d);flex:${F[1]}">${pc(F[1])}</div><div style="background:var(--a);flex:${F[2]}">${pc(F[2])}</div></div>
  <div class="mute">Home / Draw / Away. Model: ${r.p.map(pc).join(' / ')}${mk?` | Bookmakers: ${mk.map(pc).join(' / ')}`:''}</div>
  ${mk?'':'<div class="mute">No bookmaker odds listed for this match, so this is the statistical model alone.</div>'}
- <p>Expected goals ${r.mh.toFixed(2)} - ${r.ma.toFixed(2)}. Over 2.5: ${pc(r.over)}. Both score: ${pc(r.btts)}.<br>Likely scores: ${r.top.map(t=>`${t[1]} (${pc(t[0])})`).join(', ')}</p>
- <div class="mute">Based on ${D.matches_used} matches, data until ${D.data_until}.</div></div>
+ <p>Expected goals ${r.mh.toFixed(2)} - ${r.ma.toFixed(2)}. Over 2.5: ${pc(r.over)}. Both score: ${pc(r.btts)}.<br>Likely scores: ${r.top.map(t=>`${esc(t[1])} (${pc(t[0])})`).join(', ')}</p>
+ <div class="mute">Based on ${esc(D.matches_used)} matches, data until ${esc(D.data_until)}.</div></div>
  <div class="card"><h2>Team form</h2><table><tr>${prof(h,D.profiles[h])}${prof(a,D.profiles[a])}</tr></table></div>
- <div class="card"><h2>Recent meetings</h2>${hm.length?hm.map(m=>`<div class="mute">${m[0]}: ${D.names[m[1]]} ${m[3]}-${m[4]} ${D.names[m[2]]}</div>`).join(''):'<div class="mute">None in the data.</div>'}</div>
+ <div class="card"><h2>Recent meetings</h2>${hm.length?hm.map(m=>`<div class="mute">${esc(m[0])}: ${esc(D.names[m[1]])} ${esc(m[3])}-${esc(m[4])} ${esc(D.names[m[2]])}</div>`).join(''):'<div class="mute">None in the data.</div>'}</div>
  <div id="club"></div>`;
- club(h);club(a);accuracy()}
-async function club(t){try{const r=await (await fetch('https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t='+encodeURIComponent(t))).json();const x=r.teams&&r.teams[0];
- if(x)$('club').insertAdjacentHTML('beforeend',`<div class="card"><h2>${t}</h2><div class="mute">Founded ${x.intFormedYear||'?'}, ${x.strStadium||''}</div><p style="font-size:14px">${(x.strDescriptionEN||'').slice(0,500)}...</p></div>`)}catch(e){}}
-function save(e){try{const L=JSON.parse(localStorage.fp||'[]');if(!L.some(x=>x.div==e.div&&x.home==e.home&&x.away==e.away&&x.day==e.day))L.push(e);localStorage.fp=JSON.stringify(L.slice(-300))}catch(x){}}
-async function accuracy(){try{const L=JSON.parse(localStorage.fp||'[]');let n=0,c=0;const cache={};
- for(const e of L){if(!cache[e.div])cache[e.div]=await get(`data/${e.div}.json`);const d=cache[e.div];
- const m=d.matches.find(m=>m[0]>=e.day&&d.names[m[1]]==e.home&&d.names[m[2]]==e.away);if(!m)continue;
- n++;const real=m[3]>m[4]?0:m[3]==m[4]?1:2;c+=e.p.indexOf(Math.max(...e.p))==real?1:0}
+ const my=++clubSeq;club(h,my);club(a,my);accuracy()}
+
+async function club(t,my){
+ try{const r=await fetch('https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t='+encodeURIComponent(t));if(!r.ok)return;
+ const j=await r.json(),x=j&&j.teams&&j.teams[0];const box=$('club');
+ if(x&&my==clubSeq&&box)box.insertAdjacentHTML('beforeend',`<div class="card"><h2>${esc(t)}</h2><div class="mute">Founded ${esc(x.intFormedYear||'?')}, ${esc(x.strStadium||'')}</div><p style="font-size:14px">${esc((x.strDescriptionEN||'').slice(0,500))}...</p></div>`)}catch(e){}}
+
+function readLog(){try{const L=JSON.parse(localStorage.getItem('fp')||'[]');return Array.isArray(L)?L:[]}catch(e){return[]}}
+function save(e){try{const L=readLog();if(!L.some(x=>x.div==e.div&&x.home==e.home&&x.away==e.away&&x.day==e.day))L.push(e);localStorage.setItem('fp',JSON.stringify(L.slice(-300)))}catch(x){}}
+function addDays(s,n){const d=new Date(s+'T00:00:00');d.setDate(d.getDate()+n);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
+async function accuracy(){
+ try{const L=readLog();let n=0,c=0;const cache={};
+ for(const e of L){
+  if(!e||!e.div||!Array.isArray(e.p))continue;
+  if(!cache[e.div]){try{cache[e.div]=await get(`data/${encodeURIComponent(e.div)}.json`)}catch(x){cache[e.div]=null}}
+  const d=cache[e.div];if(!d||!d.matches||!d.names)continue;
+  const lo=e.fx||e.day,hi=e.fx||addDays(e.day,10);   // only the real upcoming match, not a game months later
+  const m=d.matches.find(m=>m[0]>=lo&&m[0]<=hi&&d.names[m[1]]==e.home&&d.names[m[2]]==e.away);
+  if(!m)continue;n++;const real=m[3]>m[4]?0:m[3]==m[4]?1:2;c+=e.p.indexOf(Math.max(...e.p))==real?1:0}
  $('acc').textContent=n?`Tracked accuracy on this phone: ${Math.round(100*c/n)}% (${c}/${n} finished matches)`:'Tracked accuracy: no finished predictions yet.'}catch(e){}}
-$('lg').onchange=loadLeague;$('dt').onchange=loadFx;$('go').onclick=predict;$('now').onclick=async()=>{await loadLeague();accuracy()};
-init();
+
+$('lg').onchange=()=>loadLeague(false);$('dt').onchange=loadFx;$('go').onclick=()=>predict();
+$('now').onclick=async()=>{await loadLeague(true);accuracy()};
+$('auto').onchange=()=>{clearInterval(timer);const m=+$('auto').value;if(m)timer=setInterval(()=>loadLeague(true),m*60000)};
+init().then(accuracy);
 </script></body></html>

@@ -1,11 +1,38 @@
 """Builds the static data files used by docs/index.html. Run by GitHub Actions every hour."""
-import os, json, datetime as dt
+import os, json, math, datetime as dt
 import pandas as pd
 import data, model
 
 OUT = os.path.join(os.path.dirname(__file__), "docs", "data")
 os.makedirs(OUT, exist_ok=True)
-conv = lambda o: o.item() if hasattr(o, "item") else str(o)
+
+
+def clean(o):
+    """Make everything valid JSON: numpy -> python, NaN/inf -> None."""
+    if hasattr(o, "item"):
+        o = o.item()
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {str(k): clean(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [clean(v) for v in o]
+    return o
+
+
+def write_if_changed(path, obj):
+    """Only rewrite when real content changed (ignores the 'updated' stamp), so GitHub is not spammed with commits."""
+    obj = clean(obj)
+    try:
+        old = json.load(open(path))
+        a = {k: v for k, v in old.items() if k != "updated"}
+        b = {k: v for k, v in obj.items() if k != "updated"}
+        if a == b:
+            return False
+    except Exception:
+        pass
+    json.dump(obj, open(path, "w"), separators=(",", ":"), allow_nan=False)
+    return True
 
 
 def build_league(div, force=True):
@@ -38,7 +65,7 @@ def build_league(div, force=True):
                     for r in hist.itertuples()],
         "fixtures": fixtures,
     }
-    json.dump(out, open(os.path.join(OUT, f"{div}.json"), "w"), default=conv, separators=(",", ":"))
+    write_if_changed(os.path.join(OUT, f"{div}.json"), out)
     return out
 
 
@@ -47,9 +74,11 @@ if __name__ == "__main__":
     for div, (country, name) in data.LEAGUES.items():
         try:
             if build_league(div):
-                done.append({"code": div, "country": country, "name": name})
                 print("built", div)
         except Exception as e:
             print("skip", div, e)
-    json.dump({"updated": dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"), "leagues": done},
-              open(os.path.join(OUT, "leagues.json"), "w"))
+        if os.path.exists(os.path.join(OUT, f"{div}.json")):   # keep a league even if one download failed
+            done.append({"code": div, "country": country, "name": name})
+    if done:  # never wipe a good league list if every download failed
+        write_if_changed(os.path.join(OUT, "leagues.json"),
+                         {"updated": dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"), "leagues": done})

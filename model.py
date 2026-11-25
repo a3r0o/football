@@ -61,10 +61,10 @@ def fit(df, now, lam=2.0):
 
 
 def _tau(x, y, mh, ma, rho):
-    if x == 0 and y == 0: return 1 - mh * ma * rho
-    if x == 0 and y == 1: return 1 + mh * rho
-    if x == 1 and y == 0: return 1 + ma * rho
-    if x == 1 and y == 1: return 1 - rho
+    if x == 0 and y == 0: return max(1 - mh * ma * rho, 0.0)
+    if x == 0 and y == 1: return max(1 + mh * rho, 0.0)
+    if x == 1 and y == 0: return max(1 + ma * rho, 0.0)
+    if x == 1 and y == 1: return max(1 - rho, 0.0)
     return 1.0
 
 
