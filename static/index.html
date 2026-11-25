@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FootPredict</title>
+<style>
+:root{--bg:#f4f6f3;--card:#fff;--ink:#14231a;--mute:#5d6b62;--line:#d9e0da;--acc:#0f6b3a;--h:#0f6b3a;--d:#8a8f3c;--a:#b4492f}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1511;--card:#16211a;--ink:#e8efe9;--mute:#98a89d;--line:#263529;--acc:#4fc47f;--h:#4fc47f;--d:#b8bd5a;--a:#e2765a}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 Georgia,"Times New Roman",serif;padding:14px;max-width:560px;margin:auto}
+h1{font-size:22px;margin:4px 0 12px}h2{font-size:16px;margin:0 0 8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+label{display:block;font:13px system-ui,sans-serif;color:var(--mute);margin:8px 0 3px}
+select,input,button{width:100%;font:16px system-ui,sans-serif;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+button.go{background:var(--acc);color:var(--bg);border:0;font-weight:600;margin-top:12px}
+button.sm{width:auto;padding:6px 10px;font-size:14px;margin:4px 4px 0 0}
+.bar{display:flex;height:30px;border-radius:6px;overflow:hidden;font:600 13px system-ui,sans-serif;color:#fff;margin:6px 0}
+.bar div{display:flex;align-items:center;justify-content:center;min-width:8%}
+.mute{color:var(--mute);font:13px system-ui,sans-serif}.row{display:flex;gap:8px}.row>*{flex:1}
+.pill{display:inline-block;padding:2px 8px;border-radius:99px;border:1px solid var(--line);font:13px system-ui,sans-serif}
+.form span{display:inline-block;width:20px;height:20px;border-radius:4px;color:#fff;text-align:center;font:600 12px/20px system-ui;margin-right:2px}
+.W{background:var(--h)}.D{background:var(--d)}.L{background:var(--a)}
+table{width:100%;border-collapse:collapse;font:14px system-ui,sans-serif}td,th{padding:4px 2px;text-align:left;border-bottom:1px solid var(--line)}
+.err{color:var(--a);font:14px system-ui}
+</style></head><body>
+<h1>FootPredict</h1>
+<div class="card">
+ <label>League</label><select id="lg"></select>
+ <label>Date (shows upcoming matches)</label><input type="date" id="dt">
+ <div id="fx"></div>
+ <div class="row"><div><label>Home team</label><select id="th"></select></div>
+ <div><label>Away team</label><select id="ta"></select></div></div>
+ <button class="go" id="go">Predict</button>
+</div>
+<div class="card"><h2>Live update settings</h2>
+ <label>Auto-refresh data</label>
+ <select id="auto"><option value="0">Off</option><option value="30">Every 30 min</option><option value="5">Every 5 min (match day)</option></select>
+ <button class="sm" id="now" style="margin-top:8px">Update now</button>
+ <div class="mute" id="acc" style="margin-top:6px"></div>
+</div>
+<div id="out"></div>
+<script>
+const $=id=>document.getElementById(id);let timer=null;
+const j=async u=>{const r=await fetch(u);const d=await r.json();if(!r.ok)throw d.error||'Error';return d};
+const pc=x=>Math.round(x*100)+'%';
+async function init(){
+ const L=await j('/api/leagues');$('lg').innerHTML=L.map(l=>`<option value="${l.code}">${l.country} - ${l.name}</option>`).join('');
+ $('dt').value=new Date().toISOString().slice(0,10);await loadLeague();accuracy()}
+async function loadLeague(refresh){
+ try{const T=await j('/api/teams?div='+$('lg').value+(refresh?'&refresh=1':''));
+ const o=T.map(t=>`<option>${t}</option>`).join('');$('th').innerHTML=o;$('ta').innerHTML=o;$('ta').selectedIndex=1;loadFx(refresh)}
+ catch(e){$('out').innerHTML=`<div class="card err">${e}</div>`}}
+async function loadFx(refresh){
+ const F=await j(`/api/fixtures?div=${$('lg').value}&date=${$('dt').value}`+(refresh?'&refresh=1':''));
+ $('fx').innerHTML=F.length?'<label>Matches on this date (tap one)</label>'+F.map(f=>`<button class="sm" data-h="${f.home}" data-a="${f.away}">${f.home} v ${f.away} ${f.time||''}</button>`).join(''):'<div class="mute">No listed matches for this date. Pick two teams below.</div>';
+ document.querySelectorAll('#fx button').forEach(b=>b.onclick=()=>{$('th').value=b.dataset.h;$('ta').value=b.dataset.a;predict()})}
+function form(s){return `<div class="form">${(s||'').split('').map(c=>`<span class="${c}">${c}</span>`).join('')}</div>`}
+function prof(n,p){const a=p.last10||{},h=p.home_last,w=p.away_last,al=p.after_loss;
+ return `<td><b>${n}</b><br>${form(a.form)}<div class="mute">Elo ${p.elo} | streak ${p.streak}<br>Last 10: ${a.ppg} pts/game, ${a.gf} scored, ${a.ga} conceded<br>${h?`Home: ${h.ppg} ppg (${h.n})`:''} ${w?`Away: ${w.ppg} ppg (${w.n})`:''}<br>After a loss: unbeaten ${al.unbeaten}/${al.n}<br>Rest: ${p.days_since_last??'?'} days</div></td>`}
+async function predict(refresh){
+ $('out').innerHTML='<div class="card mute">Calculating with the latest data...</div>';
+ try{const r=await j(`/api/predict?div=${$('lg').value}&home=${encodeURIComponent($('th').value)}&away=${encodeURIComponent($('ta').value)}`+(refresh?'&refresh=1':''));
+ const f=r.final;
+ $('out').innerHTML=`<div class="card"><h2>${r.home} v ${r.away}</h2>
+ <div>Pick: <b>${r.pick}</b> <span class="pill">Confidence: ${r.confidence}</span></div>
+ <div class="bar"><div style="background:var(--h);flex:${f[0]}">${pc(f[0])}</div><div style="background:var(--d);flex:${f[1]}">${pc(f[1])}</div><div style="background:var(--a);flex:${f[2]}">${pc(f[2])}</div></div>
+ <div class="mute">Home / Draw / Away. Model: ${r.model.map(pc).join(' / ')}${r.market?` | Bookmakers: ${r.market.map(pc).join(' / ')}`:''}</div>
+ ${r.note?`<div class="mute">${r.note}</div>`:''}
+ <p>Expected goals ${r.xg[0]} - ${r.xg[1]}. Over 2.5: ${pc(r.over25)}. Both score: ${pc(r.btts)}.<br>Likely scores: ${r.scores.slice(0,3).map(s=>`${s.score} (${pc(s.prob)})`).join(', ')}</p>
+ <div class="mute">Data until ${r.data_until} (${r.matches_used} matches). Updated ${r.updated}.</div></div>
+ <div class="card"><h2>Team form</h2><table><tr>${prof(r.home,r.home_profile)}${prof(r.away,r.away_profile)}</tr></table></div>
+ <div class="card"><h2>Recent meetings</h2>${r.h2h.length?r.h2h.map(x=>`<div class="mute">${x.date}: ${x.home} ${x.score} ${x.away}</div>`).join(''):'<div class="mute">None in the data.</div>'}</div>
+ ${['home','away'].map(k=>r.palmares[k]?`<div class="card"><h2>${r[k]}</h2><div class="mute">Founded ${r.palmares[k].founded||'?'}, ${r.palmares[k].stadium||''}</div><p style="font-size:14px">${r.palmares[k].text}...</p></div>`:'').join('')}`;
+ accuracy()}catch(e){$('out').innerHTML=`<div class="card err">${e}</div>`}}
+async function accuracy(){try{const a=await j('/api/accuracy');$('acc').textContent=a.n?`Tracked accuracy: ${a.pct}% (${a.correct}/${a.n} finished matches)`:'Tracked accuracy: no finished predictions yet.'}catch(e){}}
+$('lg').onchange=()=>loadLeague();$('dt').onchange=()=>loadFx();$('go').onclick=()=>predict();
+$('now').onclick=async()=>{await loadLeague(true);if($('out').innerHTML.includes('Pick:'))predict(true)};
+$('auto').onchange=()=>{clearInterval(timer);const m=+$('auto').value;if(m)timer=setInterval(()=>$('now').click(),m*60000)};
+init();
+</script></body></html>
